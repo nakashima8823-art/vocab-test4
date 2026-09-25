@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>英単語テスト（番号指定・複数範囲）</title>
+
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Yu Gothic",sans-serif;padding:18px;background:#fafafa}
+.controlCard,.card,.barWrap{background:#fff;border-radius:10px;padding:12px;box-shadow:0 2px 8px rgba(0,0,0,0.06);max-width:720px;margin:12px auto}
+h1{font-size:18px}
+.jp{font-size:22px;margin-bottom:6px}
+.no{font-size:14px;color:#555;margin-bottom:10px}
+input[type=text]{width:100%;padding:10px;font-size:18px;border-radius:6px;border:1px solid #ccc}
+.result{margin-top:12px;font-size:18px;min-height:30px}
+.correct{color:green;font-weight:700}
+.incorrect{color:#d9534f;font-weight:700}
+.answer{color:#1a73e8;margin-top:6px}
+.labelRow{display:flex;justify-content:space-between;font-size:13px;color:#444;margin-bottom:6px}
+.barBg{width:100%;background:#eee;height:16px;border-radius:8px;overflow:hidden}
+.barFill{height:100%;background:#4caf50;width:0%}
+.barFillAcc{height:100%;background:#1976d2;width:0%}
+.small{font-size:12px;color:#666}
+button{padding:8px 12px;font-size:15px;border-radius:8px;border:0;background:#1976d2;color:#fff}
+</style>
+</head>
+
+<body>
+<h1>英単語テスト</h1>
+
+<div class="controlCard">
+  出題する問題番号（例：1-20,25-30）<br>
+  <input type="text" id="rangeInput" value="1-10"/>
+  <button id="startBtn">開始</button>
+  <div id="loadInfo" class="small" style="margin-top:8px"></div>
+</div>
+
+<div id="status" style="max-width:720px;margin:4px auto;text-align:center"></div>
+<div id="quizArea"></div>
+
+<div class="barWrap">
+  <div class="labelRow">
+    <div>進捗</div><div id="progressText" class="small">0 / 0</div>
+  </div>
+  <div class="barBg"><div id="progressBar" class="barFill"></div></div>
+
+  <div style="height:10px"></div>
+
+  <div class="labelRow">
+    <div>正解率</div><div id="accuracyText" class="small">0 / 0 (0%)</div>
+  </div>
+  <div class="barBg"><div id="accuracyBar" class="barFillAcc"></div></div>
+</div>
+
+<div class="small" style="max-width:720px;margin:8px auto;text-align:right">
+操作：入力 → Enter（判定）→ Enter（次へ）
+</div>
+
+<script>
+(function(){
+
+/* ---------- CSVパーサ ---------- */
+function parseCSV(text){
+  text=text.replace(/^\uFEFF/,'');
+  const rows=[];let cur='',row=[],inQ=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i],n=text[i+1];
+    if(c=='"'){ if(inQ&&n=='"'){cur+='"';i++;} else inQ=!inQ; continue; }
+    if(c==','&&!inQ){row.push(cur);cur='';continue;}
+    if((c=='\n'||c=='\r')&&!inQ){
+      if(cur||row.length){row.push(cur);rows.push(row);}
+      cur='';row=[]; if(c=='\r'&&n=='\n')i++; continue;
+    }
+    cur+=c;
+  }
+  if(cur||row.length){row.push(cur);rows.push(row);}
+  return rows;
+}
+function esc(s){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
+function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a;}
+
+/* ---------- 状態 ---------- */
+let allQ=[],pool=[],wrong=[],current=0,answered=0,correct=0,waiting=false,mode='main';
+
+/* ---------- DOM ---------- */
+const rangeInput=document.getElementById('rangeInput');
+const startBtn=document.getElementById('startBtn');
+const loadInfo=document.getElementById('loadInfo');
+const quizArea=document.getElementById('quizArea');
+const status=document.getElementById('status');
+const progressBar=document.getElementById('progressBar');
+const progressText=document.getElementById('progressText');
+const accuracyBar=document.getElementById('accuracyBar');
+const accuracyText=document.getElementById('accuracyText');
+
+/* ---------- CSV自動読込 ---------- */
+fetch('words.csv')
+.then(r=>r.text())
+.then(t=>{
+  parseCSV(t).forEach(r=>{
+    const no=Number(r[0]);
+    const e=(r[1]||'').trim();
+    const j=(r[2]||'').trim();
+    if(!isNaN(no)&&e&&j) allQ.push({no,eng:e,jp:j});
+  });
+  loadInfo.textContent=`words.csv を読み込みました（${allQ.length}問）`;
+})
+.catch(()=>alert('words.csv が読み込めません'));
+
+function parseRanges(str){
+  const set=new Set();
+  str.split(',').forEach(p=>{
+    if(p.includes('-')){
+      let[a,b]=p.split('-').map(Number);
+      if(!isNaN(a)&&!isNaN(b))
+        for(let i=a;i<=b;i++) set.add(i);
+    }else{
+      const n=Number(p);
+      if(!isNaN(n)) set.add(n);
+    }
+  });
+  return set;
+}
+
+startBtn.onclick=()=>{
+  const nums=parseRanges(rangeInput.value);
+  pool=allQ.filter(q=>nums.has(q.no));
+  if(!pool.length){alert('該当する問題がありません');return;}
+  pool=shuffle(pool);
+  current=answered=correct=0;wrong=[];mode='main';waiting=false;
+  show();
+};
+
+function show(){
+  quizArea.innerHTML='';
+  if(current>=pool.length){
+    if(wrong.length){
+      pool=shuffle(wrong.slice());
+      wrong=[];current=answered=correct=0;mode='review';
+      show(); return;
+    }
+    alert('終了！'); return;
+  }
+  const q=pool[current];
+  quizArea.innerHTML=`
+    <div class="card">
+      <div class="no">問題番号：${q.no}</div>
+      <div class="jp"><b>日本語：</b>${esc(q.jp)}</div>
+      <input id="ans" type="text"/>
+      <div id="res" class="result"></div>
+      <div id="corr" class="answer"></div>
+    </div>`;
+  const input=document.getElementById('ans'); input.focus();
+  input.onkeydown=e=>{
+    if(e.key==='Enter'){
+      e.preventDefault();
+      if(!waiting) check();
+      else{waiting=false;current++;show();}
+    }
+  };
+  update();
+}
+
+function check(){
+  const input=document.getElementById('ans');
+  const u=input.value.trim().toLowerCase();
+  const a=pool[current].eng.toLowerCase();
+  const res=document.getElementById('res');
+  const corr=document.getElementById('corr');
+  if(u===a){res.innerHTML='<span class="correct">〇 正解</span>';correct++;}
+  else{res.innerHTML='<span class="incorrect">✕ 不正解</span>';corr.textContent='→ '+pool[current].eng;wrong.push(pool[current]);}
+  answered++;waiting=true;update();
+}
+
+function update(){
+  const total=pool.length;
+  const acc=answered?correct/answered*100:0;
+  status.textContent=`${mode==='main'?'本番':'復習'} ${current+1}/${total} 正解率 ${acc.toFixed(1)}%`;
+  progressBar.style.width=(current/total*100)+'%';
+  progressText.textContent=`${current+1} / ${total}`;
+  accuracyBar.style.width=acc+'%';
+  accuracyText.textContent=`${correct} / ${answered} (${acc.toFixed(1)}%)`;
+}
+
+})();
+</script>
+</body>
+</html>
